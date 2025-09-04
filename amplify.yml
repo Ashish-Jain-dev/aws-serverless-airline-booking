@@ -1,55 +1,13 @@
-version: 0.1
+version: 1
 backend:
   phases:
     preBuild:
       commands:
-        - npm install -g @aws-amplify/cli@4.13.1 # pinned known working version
-        - aws configure set cli_follow_urlparam false # fix for parameter store when storing URLs
-        # Install jq manually without sudo (replaces make init)
-        - curl -L https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 -o /tmp/jq
-        - chmod +x /tmp/jq
-        - export PATH="/tmp:$PATH"
+        - npm install -g @aws-amplify/cli@latest
+        - aws configure set cli_follow_urlparam false
     build:
       commands:
-        - "# Execute Amplify CLI with the helper script"
         - amplifyPush --simple
-        ##
-        # Extract Environment data (using /tmp/jq)
-        ##
-        - export STACK_NAME=$(/tmp/jq -r '.providers.awscloudformation.StackName' ./amplify/#current-cloud-backend/amplify-meta.json)
-        - export DEPLOYMENT_BUCKET_NAME=$(/tmp/jq -r '.providers.awscloudformation.DeploymentBucketName' ./amplify/#current-cloud-backend/amplify-meta.json)
-        - export AWS_DEFAULT_REGION=$(/tmp/jq -r '.providers.awscloudformation.Region' amplify/#current-cloud-backend/amplify-meta.json)
-        - export GRAPHQL_API_ID=$(/tmp/jq -r '.api[(.api | keys)[0]].output.GraphQLAPIIdOutput' ./amplify/#current-cloud-backend/amplify-meta.json)
-        - export GRAPHQL_URL=$(/tmp/jq -r '.api[(.api | keys)[0]].output.GraphQLAPIEndpointOutput' ./amplify/#current-cloud-backend/amplify-meta.json)
-        - export COGNITO_USER_POOL_ID=$(/tmp/jq -r '.auth[(.auth | keys)[0]].output.UserPoolId' ./amplify/#current-cloud-backend/amplify-meta.json)
-        - export COGNITO_USER_POOL_ARN=$(aws cognito-idp describe-user-pool --user-pool-id ${COGNITO_USER_POOL_ID} --query 'UserPool.Arn' --output text)
-        - export COGNITO_USER_POOL_CLIENT_ID=$(/tmp/jq -r '.auth[(.auth | keys)[0]].output.AppClientIDWeb' ./amplify/#current-cloud-backend/amplify-meta.json)
-        - aws appsync list-data-sources --api-id ${GRAPHQL_API_ID} > datasources.json
-        - export FLIGHT_TABLE_NAME=$(/tmp/jq -r '.dataSources[] | select(.name == "FlightTable") | .dynamodbConfig.tableName' datasources.json)
-        - export BOOKING_TABLE_NAME=$(/tmp/jq -r '.dataSources[] | select(.name == "BookingTable") | .dynamodbConfig.tableName' datasources.json)
-        # Set placeholder Stripe keys if not provided
-        - export STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-"sk_test_placeholder_for_demo"}
-        - export STRIPE_PUBLIC_KEY=${STRIPE_PUBLIC_KEY:-"pk_test_placeholder_for_demo"}
-        ##
-        # Export key deployed resources to System Manager Parameter Store (using aws ssm instead of make)
-        ##
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/deployment/stackName" --value "${STACK_NAME}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/deployment/deploymentBucket" --value "${DEPLOYMENT_BUCKET_NAME}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/auth/userpool/id" --value "${COGNITO_USER_POOL_ID}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/auth/userpool/arn" --value "${COGNITO_USER_POOL_ARN}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/auth/userpool/clientId" --value "${COGNITO_USER_POOL_CLIENT_ID}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/api/id" --value "${GRAPHQL_API_ID}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/api/url" --value "${GRAPHQL_URL}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/storage/table/flight" --value "${FLIGHT_TABLE_NAME}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/amplify/storage/table/booking" --value "${BOOKING_TABLE_NAME}" --type String --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/payment/stripe/secretKey" --value "${STRIPE_SECRET_KEY}" --type SecureString --overwrite
-        - aws ssm put-parameter --name "/${AWS_BRANCH}/service/payment/stripe/publicKey" --value "${STRIPE_PUBLIC_KEY}" --type String --overwrite
-        ##
-        # Deploy SAM based back-end (simplified, no make commands)
-        ##
-        - cd src/backend
-        - sam build
-        - sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --stack-name serverless-airline-${AWS_BRANCH} --capabilities CAPABILITY_IAM --resolve-s3
 frontend:
   phases:
     preBuild:
@@ -58,33 +16,12 @@ frontend:
         - npm install
     build:
       commands:
-        ## 
-        # Expose Stripe public key and Payment Charge URL as a VueJS runtime env
-        ## 
-        - export VUE_APP_StripePublicKey=${STRIPE_PUBLIC_KEY:-"pk_test_placeholder_for_demo"}
-        - export VUE_APP_PaymentChargeUrl=$(aws ssm get-parameter --name /${AWS_BRANCH}/service/payment/api/charge/url --query 'Parameter.Value' --output text || echo "payment-url-placeholder")
+        - cd src/frontend
         - npm run build
   artifacts:
     baseDirectory: src/frontend/dist
     files:
-      - "**/*"
+      - '**/*'
   cache:
     paths:
-      - node_modules/**/*
-  customHeaders:
-    - pattern: "**/*"
-      headers:
-        - key: "Strict-Transport-Security"
-          value: "max-age=31536000; includeSubDomains"
-        - key: "X-Content-Type-Options"
-          value: "nosniff"
-        - key: "X-XSS-Protection"
-          value: "1; mode=block"
-        - key: "X-Frame-Options"
-          value: "DENY"
-        - key: "Referrer-Policy"
-          value: "same-origin"
-        - key: "Feature-Policy"
-          value: "microphone 'none'; camera 'none'; notifications 'self'"
-        - key: "Content-Security-Policy"
-          value: "default-src 'none'; connect-src https://*.amazonaws.com; font-src 'self' https://fonts.gstatic.com; frame-src https://js.stripe.com; img-src 'self'; script-src 'self' 'unsafe-eval' https://js.stripe.com/v3/; style-src 'self' https://fonts.googleapis.com/css?family=Raleway 'unsafe-inline' https://fonts.googleapis.com"
+      - src/frontend/node_modules/**/*
